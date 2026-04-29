@@ -1,25 +1,26 @@
 import { useState, useEffect } from 'react';
-import { Plus, Minus, Copy, Check, ChevronDown, ChevronRight, RotateCcw, Sparkles, History, Lock, Unlock, ArrowLeft, Calendar, X } from 'lucide-react';
+import { Plus, Minus, Copy, Check, ChevronDown, ChevronRight, RotateCcw, Sparkles, History, Lock, Unlock, ArrowLeft, Calendar, X, MessageSquare, Trash2 } from 'lucide-react';
 
 // ============== CONSTANTS ==============
 const C = {
-  bg: '#09090f',
-  bgElev: '#111118',
-  surface: '#16161e',
-  border: 'rgba(255,255,255,0.06)',
-  borderStrong: 'rgba(255,255,255,0.1)',
-  text: '#eeeef0',
-  textMuted: '#9d9db0',
-  textDim: '#55556a',
-  accent: '#a78bfa',
-  accentDim: '#7c5cbf',
-  accentGlow: 'rgba(167,139,250,0.15)',
+  bg: '#0c0c14',
+  bgElev: '#13131d',
+  surface: '#1a1a26',
+  card: '#16162080',
+  border: 'rgba(255,255,255,0.07)',
+  borderStrong: 'rgba(255,255,255,0.12)',
+  text: '#f0f0f4',
+  textMuted: '#a0a0b8',
+  textDim: '#606078',
+  accent: '#818cf8',
+  accentDim: '#6366f1',
+  accentGlow: 'rgba(129,140,248,0.12)',
   ok: '#34d399',
-  warn: '#fb923c',
+  warn: '#fbbf24',
   mono: '"JetBrains Mono", ui-monospace, monospace',
   sans: '"Inter", -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif',
-  radius: '12px',
-  radiusSm: '8px',
+  radius: '14px',
+  radiusSm: '10px',
 };
 
 const STORAGE_META = 'henok:meta';
@@ -56,14 +57,14 @@ const store = {
 };
 
 const DAILY_TASKS = [
-  { id: 'ritual', time: '6:30 — 7:00', label: 'Morning ritual', sub: 'Coffee, light movement, no phone' },
-  { id: 'plan', time: '7:00 — 7:15', label: 'Daily plan written', sub: 'Pick top 3 wins for the day' },
-  { id: 'deep1', time: '7:15 — 9:30', label: 'Deep Work — Block 1', sub: 'Highest-leverage build task' },
-  { id: 'apps', time: '9:45 — 11:30', label: 'Applications + DMs', sub: '5 tailored apps + 3 hiring manager DMs' },
-  { id: 'lunch', time: '11:30 — 12:30', label: 'Lunch + Social Booth', sub: '3–5 venue outreaches' },
-  { id: 'upwork', time: '12:30 — 14:30', label: 'Upwork + Gigs', sub: '5 proposals or active client work' },
-  { id: 'deep2', time: '14:45 — 16:30', label: 'Deep Work — Block 2', sub: 'Case study, RAG cert, content, or client work' },
-  { id: 'comms', time: '16:30 — 17:30', label: 'Comms & admin', sub: 'Reply to all messages, update tracker' },
+  { id: 'ritual', time: '6:30 AM — 7:00 AM', label: 'Morning ritual', sub: 'Coffee, light movement, no phone' },
+  { id: 'plan', time: '7:00 AM — 7:15 AM', label: 'Daily plan written', sub: 'Pick top 3 wins for the day' },
+  { id: 'deep1', time: '7:15 AM — 9:30 AM', label: 'Deep Work — Block 1', sub: 'Highest-leverage build task' },
+  { id: 'apps', time: '9:45 AM — 11:30 AM', label: 'Applications + DMs', sub: '5 tailored apps + 3 hiring manager DMs' },
+  { id: 'lunch', time: '11:30 AM — 12:30 PM', label: 'Lunch + Social Booth', sub: '3–5 venue outreaches' },
+  { id: 'upwork', time: '12:30 PM — 2:30 PM', label: 'Upwork + Gigs', sub: '5 proposals or active client work' },
+  { id: 'deep2', time: '2:45 PM — 4:30 PM', label: 'Deep Work — Block 2', sub: 'Case study, RAG cert, content, or client work' },
+  { id: 'comms', time: '4:30 PM — 5:30 PM', label: 'Comms & admin', sub: 'Reply to all messages, update tracker' },
 ];
 
 const COUNTERS = [
@@ -154,7 +155,9 @@ const DEFAULT_DAY = {
   top3: ['', '', ''],
   checked: {},
   counters: { apps: 0, dms: 0, upwork: 0, sb: 0 },
-  income: 0,
+  plans: [],
+  notes: {},
+  taskTimes: {},
   review: { wins: '', tomorrow: '' },
   locked: false,
   lockedAt: null,
@@ -190,6 +193,14 @@ const dayNumberFor = (key, startDate) => {
 };
 
 const weekNumberFor = (dn) => Math.min(4, Math.max(1, Math.ceil(dn / 7)));
+
+const weekDateRange = (weekNum, startDate) => {
+  const start = new Date(startDate + 'T00:00:00');
+  const weekStart = new Date(start.getTime() + (weekNum - 1) * 7 * 86400000);
+  const weekEnd = new Date(weekStart.getTime() + 6 * 86400000);
+  const fmt = (d) => d.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+  return `${fmt(weekStart)} – ${fmt(weekEnd)}`;
+};
 
 // ============== COMPONENT ==============
 export default function DailyChecklist() {
@@ -243,6 +254,9 @@ export default function DailyChecklist() {
               ...parsed,
               counters: { ...DEFAULT_DAY.counters, ...(parsed.counters || {}) },
               review: { ...DEFAULT_DAY.review, ...(parsed.review || {}) },
+              plans: parsed.plans || [],
+              notes: parsed.notes || {},
+              taskTimes: parsed.taskTimes || {},
             });
           } else {
             setDay(DEFAULT_DAY);
@@ -295,9 +309,16 @@ export default function DailyChecklist() {
 
   const toggleCheck = (id) => setDay((d) => ({ ...d, checked: { ...d.checked, [id]: !d.checked[id] } }));
   const adjustCounter = (id, delta) => setDay((d) => ({ ...d, counters: { ...d.counters, [id]: Math.max(0, (d.counters[id] || 0) + delta) } }));
-  const setIncome = (val) => setDay((d) => ({ ...d, income: parseFloat(val) || 0 }));
+  const setWeekIncome = (val) => setWeekMs((m) => ({ ...m, income: parseFloat(val) || 0 }));
   const setReview = (key, val) => setDay((d) => ({ ...d, review: { ...d.review, [key]: val } }));
   const toggleMilestone = (id) => setWeekMs((m) => ({ ...m, [id]: !m[id] }));
+
+  const addPlan = () => setDay((d) => ({ ...d, plans: [...d.plans, ''] }));
+  const updatePlan = (idx, val) => setDay((d) => { const p = [...d.plans]; p[idx] = val; return { ...d, plans: p }; });
+  const removePlan = (idx) => setDay((d) => ({ ...d, plans: d.plans.filter((_, i) => i !== idx) }));
+
+  const setNote = (taskId, val) => setDay((d) => ({ ...d, notes: { ...d.notes, [taskId]: val } }));
+  const setTaskTime = (taskId, val) => setDay((d) => ({ ...d, taskTimes: { ...d.taskTimes, [taskId]: val } }));
 
   const copyScript = async (script) => {
     try {
@@ -444,7 +465,7 @@ export default function DailyChecklist() {
                     width: '100%',
                     transition: 'all 0.2s ease',
                   }}
-                  onMouseEnter={(e) => { e.currentTarget.style.background = C.surface; e.currentTarget.style.borderColor = 'rgba(167,139,250,0.2)'; e.currentTarget.style.transform = 'translateY(-1px)'; }}
+                  onMouseEnter={(e) => { e.currentTarget.style.background = C.surface; e.currentTarget.style.borderColor = 'rgba(129,140,248,0.2)'; e.currentTarget.style.transform = 'translateY(-1px)'; }}
                   onMouseLeave={(e) => { e.currentTarget.style.background = C.bgElev; e.currentTarget.style.borderColor = C.border; e.currentTarget.style.transform = 'translateY(0)'; }}
                 >
                   <div style={{ fontFamily: C.mono, fontSize: 12, color: C.textDim, letterSpacing: '0.04em' }}>
@@ -552,7 +573,7 @@ export default function DailyChecklist() {
       <Section num="02" title="Today's output" right={
         <div style={{ display: 'flex', gap: 8 }}>
           <Badge accent={countersHit === COUNTERS.length}>{countersHit}/{COUNTERS.length} GOALS</Badge>
-          {day.income > 0 && <Badge accent>${day.income.toLocaleString()}</Badge>}
+          {(weekMs.income || 0) > 0 && <Badge accent>${(weekMs.income || 0).toLocaleString()}/wk</Badge>}
         </div>
       }>
         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', gap: 12 }}>
@@ -560,7 +581,7 @@ export default function DailyChecklist() {
             const v = day.counters[c.id] || 0;
             const hit = v >= c.target;
             return (
-              <div key={c.id} style={{ background: C.bgElev, padding: '22px 20px', display: 'flex', flexDirection: 'column', gap: 14, borderRadius: C.radius, border: `1px solid ${hit ? 'rgba(167,139,250,0.2)' : C.border}`, transition: 'border-color 0.3s' }}>
+              <div key={c.id} style={{ background: C.bgElev, padding: '22px 20px', display: 'flex', flexDirection: 'column', gap: 14, borderRadius: C.radius, border: `1px solid ${hit ? 'rgba(129,140,248,0.2)' : C.border}`, transition: 'border-color 0.3s' }}>
                 <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline' }}>
                   <div style={{ fontFamily: C.mono, fontSize: 11, letterSpacing: '0.06em', color: C.textMuted, textTransform: 'uppercase' }}>{c.label}</div>
                   <div style={{ fontFamily: C.mono, fontSize: 11, color: hit ? C.accent : C.textDim }}>GOAL {c.target}</div>
@@ -574,18 +595,18 @@ export default function DailyChecklist() {
             );
           })}
           <div style={{ background: C.bgElev, padding: '22px 20px', display: 'flex', flexDirection: 'column', gap: 14, gridColumn: 'span 2', borderRadius: C.radius, border: `1px solid ${C.border}` }}>
-            <div style={{ fontFamily: C.mono, fontSize: 11, letterSpacing: '0.06em', color: C.textMuted, textTransform: 'uppercase' }}>Income today ($)</div>
+            <div style={{ fontFamily: C.mono, fontSize: 11, letterSpacing: '0.06em', color: C.textMuted, textTransform: 'uppercase' }}>Income this week ($)</div>
             <input
               type="number"
               min="0"
-              value={day.income || ''}
-              onChange={(e) => setIncome(e.target.value)}
+              value={weekMs.income || ''}
+              onChange={(e) => setWeekIncome(e.target.value)}
               placeholder="0"
               style={{
                 background: 'transparent',
                 border: `1px solid ${C.borderStrong}`,
                 borderRadius: C.radiusSm,
-                color: day.income > 0 ? C.accent : C.text,
+                color: (weekMs.income || 0) > 0 ? C.accent : C.text,
                 padding: '14px 16px',
                 fontSize: 26,
                 fontFamily: C.mono,
@@ -600,60 +621,109 @@ export default function DailyChecklist() {
         </div>
       </Section>
 
-      <Section num="03" title="Daily schedule" right={<Badge accent={dailyTasksDone === DAILY_TASKS.length}>{dailyTasksDone}/{DAILY_TASKS.length} DONE</Badge>}>
+      <Section num="03" title="Daily plan" right={
+        <button onClick={addPlan} style={{ ...pillBtn(), color: C.accent, borderColor: 'rgba(129,140,248,0.3)' }}>
+          <Plus size={12} /> ADD ITEM
+        </button>
+      }>
+        {day.plans.length === 0 ? (
+          <div style={{ textAlign: 'center', padding: '32px 16px', color: C.textDim, fontSize: 14, background: C.bgElev, borderRadius: C.radius, border: `1px solid ${C.border}` }}>
+            No plan items yet. Click "Add Item" to start planning your day.
+          </div>
+        ) : (
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+            {day.plans.map((p, i) => (
+              <div key={i} style={{ display: 'flex', alignItems: 'center', gap: 12, background: C.bgElev, border: `1px solid ${C.border}`, padding: '14px 16px', borderRadius: C.radius, transition: 'border-color 0.2s' }}>
+                <span style={{ fontFamily: C.mono, fontSize: 12, color: C.accent, fontWeight: 600, minWidth: 24 }}>{String(i + 1).padStart(2, '0')}</span>
+                <input
+                  type="text"
+                  value={p}
+                  onChange={(e) => updatePlan(i, e.target.value)}
+                  placeholder="What do you plan to do?"
+                  style={{ flex: 1, background: 'transparent', border: 'none', outline: 'none', color: C.text, fontSize: 15, fontFamily: 'inherit' }}
+                />
+                <button onClick={() => removePlan(i)} style={{ background: 'transparent', border: 'none', color: C.textDim, cursor: 'pointer', padding: 4, display: 'flex', transition: 'color 0.2s' }}>
+                  <Trash2 size={14} />
+                </button>
+              </div>
+            ))}
+          </div>
+        )}
+      </Section>
+
+      <Section num="04" title="Daily schedule" right={<Badge accent={dailyTasksDone === DAILY_TASKS.length}>{dailyTasksDone}/{DAILY_TASKS.length} DONE</Badge>}>
         <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
-          {DAILY_TASKS.map((t) => (
-            <button
-              key={t.id}
-              onClick={() => toggleCheck(t.id)}
-              style={{
-                display: 'grid',
-                gridTemplateColumns: '24px 110px 1fr',
-                gap: 16,
-                alignItems: 'center',
-                background: C.bgElev,
-                border: `1px solid ${day.checked[t.id] ? 'rgba(167,139,250,0.15)' : C.border}`,
-                borderRadius: C.radius,
-                padding: '16px 18px',
-                cursor: 'pointer',
-                textAlign: 'left',
-                color: 'inherit',
-                fontFamily: 'inherit',
-                width: '100%',
-                transition: 'all 0.2s ease',
-              }}
-              onMouseEnter={(e) => { e.currentTarget.style.background = C.surface; e.currentTarget.style.transform = 'translateY(-1px)'; }}
-              onMouseLeave={(e) => { e.currentTarget.style.background = C.bgElev; e.currentTarget.style.transform = 'translateY(0)'; }}
-            >
-              <div style={{
-                width: 22, height: 22, borderRadius: 6,
-                border: `2px solid ${day.checked[t.id] ? C.accent : C.borderStrong}`,
-                background: day.checked[t.id] ? C.accent : 'transparent',
-                display: 'flex', alignItems: 'center', justifyContent: 'center',
-                transition: 'all 0.2s ease',
-                boxShadow: day.checked[t.id] ? '0 2px 8px rgba(167,139,250,0.3)' : 'none',
-              }}>
-                {day.checked[t.id] && <Check size={13} color="#fff" strokeWidth={3} />}
+          {DAILY_TASKS.map((t) => {
+            const noteOpen = (day.notes[t.id] || '').length > 0;
+            return (
+            <div key={t.id} style={{ display: 'flex', flexDirection: 'column', gap: 0 }}>
+              <div
+                style={{
+                  display: 'grid',
+                  gridTemplateColumns: '24px 1fr auto',
+                  gap: 14,
+                  alignItems: 'center',
+                  background: C.bgElev,
+                  border: `1px solid ${day.checked[t.id] ? 'rgba(129,140,248,0.15)' : C.border}`,
+                  borderRadius: noteOpen ? `${C.radius} ${C.radius} 0 0` : C.radius,
+                  padding: '16px 18px',
+                  transition: 'all 0.2s ease',
+                }}
+              >
+                <div
+                  onClick={() => toggleCheck(t.id)}
+                  style={{
+                    width: 22, height: 22, borderRadius: 6, cursor: 'pointer',
+                    border: `2px solid ${day.checked[t.id] ? C.accent : C.borderStrong}`,
+                    background: day.checked[t.id] ? C.accent : 'transparent',
+                    display: 'flex', alignItems: 'center', justifyContent: 'center',
+                    transition: 'all 0.2s ease',
+                    boxShadow: day.checked[t.id] ? '0 2px 8px rgba(129,140,248,0.3)' : 'none',
+                  }}>
+                  {day.checked[t.id] && <Check size={13} color="#fff" strokeWidth={3} />}
+                </div>
+                <div style={{ display: 'flex', flexDirection: 'column', gap: 3 }}>
+                  <div style={{
+                    fontSize: 15, fontWeight: 500,
+                    color: day.checked[t.id] ? C.textMuted : C.text,
+                    textDecoration: day.checked[t.id] ? 'line-through' : 'none',
+                  }}>{t.label}</div>
+                  <div style={{ fontSize: 13, color: C.textDim }}>{t.sub}</div>
+                  <input
+                    type="text"
+                    value={day.taskTimes[t.id] || t.time}
+                    onChange={(e) => setTaskTime(t.id, e.target.value)}
+                    style={{ fontFamily: C.mono, fontSize: 11, color: C.textDim, letterSpacing: '0.02em', background: 'transparent', border: 'none', outline: 'none', padding: '2px 0', marginTop: 2, width: '100%', maxWidth: 220 }}
+                  />
+                </div>
+                <button
+                  onClick={() => setNote(t.id, day.notes[t.id] ? '' : ' ')}
+                  style={{ background: 'transparent', border: 'none', color: day.notes[t.id] ? C.accent : C.textDim, cursor: 'pointer', padding: 4, display: 'flex', transition: 'color 0.2s' }}
+                  title="Add note"
+                >
+                  <MessageSquare size={14} />
+                </button>
               </div>
-              <div style={{ fontFamily: C.mono, fontSize: 12, color: C.textDim, letterSpacing: '0.02em' }}>{t.time}</div>
-              <div style={{ display: 'flex', flexDirection: 'column', gap: 3 }}>
-                <div style={{
-                  fontSize: 15,
-                  fontWeight: 500,
-                  color: day.checked[t.id] ? C.textMuted : C.text,
-                  textDecoration: day.checked[t.id] ? 'line-through' : 'none',
-                  letterSpacing: '-0.01em',
-                }}>{t.label}</div>
-                <div style={{ fontSize: 13, color: C.textDim }}>{t.sub}</div>
-              </div>
-            </button>
-          ))}
+              {noteOpen && (
+                <div style={{ background: C.surface, borderLeft: `1px solid ${C.border}`, borderRight: `1px solid ${C.border}`, borderBottom: `1px solid ${C.border}`, borderRadius: `0 0 ${C.radius} ${C.radius}`, padding: '10px 18px' }}>
+                  <input
+                    type="text"
+                    value={day.notes[t.id] || ''}
+                    onChange={(e) => setNote(t.id, e.target.value)}
+                    placeholder="Add a note or remark…"
+                    style={{ width: '100%', background: 'transparent', border: 'none', outline: 'none', color: C.textMuted, fontSize: 13, fontFamily: 'inherit', fontStyle: 'italic' }}
+                  />
+                </div>
+              )}
+            </div>
+            );
+          })}
         </div>
       </Section>
 
-      <Section num="04" title="This week's milestones" right={<Badge accent={milestonePct === 100}>{milestonesDone}/{milestones.items.length} · {milestonePct}%</Badge>}>
+      <Section num="05" title={<>This week's milestones <span style={{ fontWeight: 400, fontSize: 14, color: C.textMuted, marginLeft: 8 }}>({weekDateRange(weekNumber, meta.startDate)})</span></>} right={<Badge accent={milestonePct === 100}>{milestonesDone}/{milestones.items.length} · {milestonePct}%</Badge>}>
         <div style={{ marginBottom: 18, height: 4, background: C.bgElev, borderRadius: 4, position: 'relative', overflow: 'hidden', border: `1px solid ${C.border}` }}>
-          <div style={{ position: 'absolute', left: 0, top: 0, bottom: 0, width: `${milestonePct}%`, background: `linear-gradient(90deg, ${C.accentDim}, ${C.accent})`, transition: 'width 0.4s ease', borderRadius: 4, boxShadow: '0 0 12px rgba(167,139,250,0.3)' }} />
+          <div style={{ position: 'absolute', left: 0, top: 0, bottom: 0, width: `${milestonePct}%`, background: `linear-gradient(90deg, ${C.accentDim}, ${C.accent})`, transition: 'width 0.4s ease', borderRadius: 4, boxShadow: '0 0 12px rgba(129,140,248,0.3)' }} />
         </div>
         <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
           {milestones.items.map((it) => {
@@ -667,7 +737,7 @@ export default function DailyChecklist() {
                   alignItems: 'center',
                   gap: 14,
                   background: C.bgElev,
-                  border: `1px solid ${done ? 'rgba(167,139,250,0.15)' : C.border}`,
+                  border: `1px solid ${done ? 'rgba(129,140,248,0.15)' : C.border}`,
                   borderRadius: C.radius,
                   padding: '14px 18px',
                   cursor: 'pointer',
@@ -687,7 +757,7 @@ export default function DailyChecklist() {
                   display: 'flex', alignItems: 'center', justifyContent: 'center',
                   flexShrink: 0,
                   transition: 'all 0.2s ease',
-                  boxShadow: done ? '0 2px 8px rgba(167,139,250,0.3)' : 'none',
+                  boxShadow: done ? '0 2px 8px rgba(129,140,248,0.3)' : 'none',
                 }}>
                   {done && <Check size={11} color="#fff" strokeWidth={3} />}
                 </div>
@@ -698,7 +768,7 @@ export default function DailyChecklist() {
         </div>
       </Section>
 
-      <Section num="05" title="Outreach scripts" right={<Badge muted>CLICK TO COPY</Badge>}>
+      <Section num="06" title="Outreach scripts" right={<Badge muted>CLICK TO COPY</Badge>}>
         <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
           {SCRIPTS.map((s) => {
             const open = scriptOpen === s.id;
@@ -734,7 +804,7 @@ export default function DailyChecklist() {
                       fontSize: 11,
                       letterSpacing: '0.04em',
                       padding: '5px 12px',
-                      border: `1px solid ${copied ? 'rgba(167,139,250,0.3)' : C.borderStrong}`,
+                      border: `1px solid ${copied ? 'rgba(129,140,248,0.3)' : C.borderStrong}`,
                       color: copied ? C.accent : C.textMuted,
                       borderRadius: 999,
                       display: 'inline-flex',
@@ -759,7 +829,7 @@ export default function DailyChecklist() {
         </div>
       </Section>
 
-      <Section num="06" title="End of day review" right={<Badge muted>BEFORE YOU LOG OFF</Badge>}>
+      <Section num="07" title="End of day review" right={<Badge muted>BEFORE YOU LOG OFF</Badge>}>
         <div style={{ display: 'flex', flexDirection: 'column', gap: 18 }}>
           <div>
             <label style={{ display: 'block', fontFamily: C.mono, fontSize: 11, letterSpacing: '0.08em', color: C.textMuted, textTransform: 'uppercase', marginBottom: 10 }}>What hit today?</label>
@@ -838,10 +908,10 @@ export default function DailyChecklist() {
                 gap: 10,
                 borderRadius: C.radius,
                 transition: 'all 0.2s ease',
-                boxShadow: '0 4px 20px rgba(167,139,250,0.25)',
+                boxShadow: '0 4px 20px rgba(129,140,248,0.25)',
               }}
-              onMouseEnter={(e) => { e.currentTarget.style.transform = 'translateY(-2px)'; e.currentTarget.style.boxShadow = '0 6px 24px rgba(167,139,250,0.4)'; }}
-              onMouseLeave={(e) => { e.currentTarget.style.transform = 'translateY(0)'; e.currentTarget.style.boxShadow = '0 4px 20px rgba(167,139,250,0.25)'; }}
+              onMouseEnter={(e) => { e.currentTarget.style.transform = 'translateY(-2px)'; e.currentTarget.style.boxShadow = '0 6px 24px rgba(129,140,248,0.4)'; }}
+              onMouseLeave={(e) => { e.currentTarget.style.transform = 'translateY(0)'; e.currentTarget.style.boxShadow = '0 4px 20px rgba(129,140,248,0.25)'; }}
             >
               <Lock size={14} /> SAVE & LOCK DAY
             </button>
@@ -883,7 +953,7 @@ function Shell({ children }) {
     <div style={{ background: C.bg, color: C.text, minHeight: '100vh', fontFamily: C.sans }}>
       <div style={{
         position: 'fixed', inset: 0, pointerEvents: 'none', zIndex: 0,
-        background: 'radial-gradient(ellipse 80% 60% at 50% -10%, rgba(167,139,250,0.08) 0%, transparent 60%), radial-gradient(ellipse 60% 40% at 80% 100%, rgba(99,102,241,0.05) 0%, transparent 50%)',
+        background: 'radial-gradient(ellipse 80% 60% at 50% -10%, rgba(129,140,248,0.07) 0%, transparent 60%), radial-gradient(ellipse 60% 40% at 80% 100%, rgba(99,102,241,0.04) 0%, transparent 50%)',
       }} />
       <div style={{ position: 'relative', zIndex: 1, maxWidth: 820, margin: '0 auto', padding: '32px 24px 80px' }}>
         {children}
@@ -919,7 +989,7 @@ function Stat({ label, value, accent = false }) {
 function Badge({ children, accent = false, muted = false }) {
   const color = accent ? C.accent : muted ? C.textDim : C.textMuted;
   const bg = accent ? C.accentGlow : 'transparent';
-  const borderC = accent ? 'rgba(167,139,250,0.3)' : C.borderStrong;
+  const borderC = accent ? 'rgba(129,140,248,0.3)' : C.borderStrong;
   return (
     <span style={{ fontFamily: C.mono, fontSize: 11, letterSpacing: '0.06em', padding: '5px 12px', border: `1px solid ${borderC}`, borderRadius: 999, color, background: bg, whiteSpace: 'nowrap', fontWeight: 500 }}>{children}</span>
   );
@@ -948,7 +1018,7 @@ function iconBtn() {
 
 function btnStyle(variant = 'default') {
   const base = { background: 'transparent', border: `1px solid ${C.borderStrong}`, color: C.text, cursor: 'pointer', fontFamily: 'inherit', fontSize: 14, padding: '10px 16px', display: 'inline-flex', alignItems: 'center', justifyContent: 'center', transition: 'all 0.2s ease', borderRadius: C.radiusSm, fontWeight: 500 };
-  if (variant === 'primary') return { ...base, background: C.accent, color: '#fff', borderColor: C.accent, padding: 10, borderRadius: C.radiusSm, boxShadow: '0 2px 12px rgba(167,139,250,0.3)' };
+  if (variant === 'primary') return { ...base, background: C.accent, color: '#fff', borderColor: C.accent, padding: 10, borderRadius: C.radiusSm, boxShadow: '0 2px 12px rgba(129,140,248,0.3)' };
   if (variant === 'ghost') return { ...base, color: C.textMuted, borderColor: C.borderStrong };
   if (variant === 'danger') return { ...base, background: C.warn, color: '#fff', borderColor: C.warn, fontWeight: 600, borderRadius: C.radiusSm };
   return { ...base, padding: 10, borderRadius: C.radiusSm };
