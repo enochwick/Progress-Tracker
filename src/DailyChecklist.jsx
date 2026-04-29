@@ -1,6 +1,6 @@
 import { useState, useEffect, useMemo, useRef } from 'react';
 import { Plus, Minus, Copy, Check, ChevronDown, ChevronRight, RotateCcw, Sparkles, History, Lock, Unlock, ArrowLeft, Calendar, X, MessageSquare, Trash2 } from 'lucide-react';
-import { isSupabaseConfigured, supabase } from './supabaseClient';
+import { isSupabaseConfigured, supabase, supabaseConfigError } from './supabaseClient';
 
 // ============== CONSTANTS ==============
 const C = {
@@ -258,7 +258,7 @@ const weekDateRange = (weekNum, startDate) => {
 
 // ============== COMPONENT ==============
 export default function DailyChecklist() {
-  const [authReady, setAuthReady] = useState(!isSupabaseConfigured);
+  const [authReady, setAuthReady] = useState(!isSupabaseConfigured || Boolean(supabaseConfigError));
   const [session, setSession] = useState(null);
   const [loaded, setLoaded] = useState(false);
   const [dayLoaded, setDayLoaded] = useState(false);
@@ -521,6 +521,10 @@ export default function DailyChecklist() {
   const allTop3Done = day.top3.every((t) => t && t.trim().length > 0);
   const countersHit = COUNTERS.filter((c) => (day.counters[c.id] || 0) >= c.target).length;
   const signOut = () => supabase?.auth.signOut();
+
+  if (supabaseConfigError) {
+    return <ConfigError message={supabaseConfigError} />;
+  }
 
   if (!authReady) {
     return (
@@ -1190,6 +1194,24 @@ function AuthGate() {
             {mode === 'signin' ? 'Need an account? Create one' : 'Already have an account? Sign in'}
           </button>
         </form>
+      </section>
+    </Shell>
+  );
+}
+
+function ConfigError({ message }) {
+  return (
+    <Shell>
+      <section style={{ minHeight: 'calc(100vh - 160px)', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+        <div style={{ width: '100%', maxWidth: 520, background: C.bgElev, border: `1px solid ${C.border}`, borderRadius: C.radius, padding: 28 }}>
+          <div style={{ fontFamily: C.mono, fontSize: 11, letterSpacing: '0.08em', color: C.warn, marginBottom: 12 }}>SUPABASE SETUP</div>
+          <h1 style={{ margin: 0, marginBottom: 10, fontSize: 28, lineHeight: 1.1, letterSpacing: '-0.02em' }}>Cloud sync needs one env fix</h1>
+          <p style={{ margin: 0, marginBottom: 18, color: C.textMuted, fontSize: 14, lineHeight: 1.6 }}>{message}</p>
+          <div style={{ background: C.surface, border: `1px solid ${C.borderStrong}`, borderRadius: C.radiusSm, padding: 16, fontFamily: C.mono, fontSize: 12, color: C.textMuted, lineHeight: 1.7 }}>
+            VITE_SUPABASE_URL=https://your-project-ref.supabase.co<br />
+            VITE_SUPABASE_ANON_KEY=your-supabase-anon-key
+          </div>
+        </div>
       </section>
     </Shell>
   );
