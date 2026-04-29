@@ -1,5 +1,6 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useMemo, useRef } from 'react';
 import { Plus, Minus, Copy, Check, ChevronDown, ChevronRight, RotateCcw, Sparkles, History, Lock, Unlock, ArrowLeft, Calendar, X, MessageSquare, Trash2 } from 'lucide-react';
+import { isSupabaseConfigured, supabase } from './supabaseClient';
 
 // ============== CONSTANTS ==============
 const C = {
@@ -28,8 +29,7 @@ const STORAGE_DAILY = (d) => `henok:day:${d}`;
 const STORAGE_WEEK = (w) => `henok:week:${w}`;
 const STORAGE_PREFIX_DAY = 'henok:day:';
 
-// localStorage adapter (replaces artifact window.storage)
-const store = {
+const localStore = {
   async get(key) {
     try {
       const v = localStorage.getItem(key);
@@ -54,6 +54,60 @@ const store = {
       return { keys };
     } catch (_) { return { keys: [] }; }
   },
+};
+
+const createProgressStore = (userId) => {
+  if (!isSupabaseConfigured || !supabase || !userId) return localStore;
+
+  return {
+    async get(key) {
+      const { data, error } = await supabase
+        .from('progress_entries')
+        .select('value')
+        .eq('user_id', userId)
+        .eq('storage_key', key)
+        .maybeSingle();
+
+      if (error) throw error;
+      return data ? { value: data.value } : null;
+    },
+    async set(key, value) {
+      const { error } = await supabase
+        .from('progress_entries')
+        .upsert(
+          {
+            user_id: userId,
+            storage_key: key,
+            value,
+            updated_at: new Date().toISOString(),
+          },
+          { onConflict: 'user_id,storage_key' },
+        );
+
+      if (error) throw error;
+      return { value };
+    },
+    async delete(key) {
+      const { error } = await supabase
+        .from('progress_entries')
+        .delete()
+        .eq('user_id', userId)
+        .eq('storage_key', key);
+
+      if (error) throw error;
+      return { deleted: true };
+    },
+    async list(prefix = '') {
+      const { data, error } = await supabase
+        .from('progress_entries')
+        .select('storage_key')
+        .eq('user_id', userId)
+        .like('storage_key', `${prefix}%`);
+
+      if (error) throw error;
+      return { keys: (data || []).map((row) => row.storage_key) };
+    },
+  };
 };
 
 const DAILY_TASKS = [
@@ -204,7 +258,11 @@ const weekDateRange = (weekNum, startDate) => {
 
 // ============== COMPONENT ==============
 export default function DailyChecklist() {
+  const [authReady, setAuthReady] = useState(!isSupabaseConfigured);
+  const [session, setSession] = useState(null);
   const [loaded, setLoaded] = useState(false);
+  const [dayLoaded, setDayLoaded] = useState(false);
+  const [hydratedDayKey, setHydratedDayKey] = useState(null);
   const [meta, setMeta] = useState({ startDate: todayKey() });
   const [day, setDay] = useState(DEFAULT_DAY);
   const [weekMs, setWeekMs] = useState({});
@@ -217,6 +275,10 @@ export default function DailyChecklist() {
   const [copiedId, setCopiedId] = useState(null);
   const [showResetConfirm, setShowResetConfirm] = useState(false);
   const [savedFlash, setSavedFlash] = useState(false);
+  const storage = useMemo(() => createProgressStore(session?.user?.id), [session?.user?.id]);
+  const storageScope = isSupabaseConfigured ? session?.user?.id : 'local';
+  const canUseStorage = !isSupabaseConfigured || Boolean(session?.user?.id);
+  const latestState = useRef({ day: DEFAULT_DAY, weekMs: {}, viewingKey: todayKey(), weekNumber: 1, dayLoaded: false, hydratedDayKey: null, storage });
 
   const isToday = viewingKey === todayKey();
   const dayNumber = dayNumberFor(viewingKey, meta.startDate);
@@ -224,13 +286,38 @@ export default function DailyChecklist() {
   const milestones = WEEK_MILESTONES[weekNumber];
 
   useEffect(() => {
+    if (!isSupabaseConfigured || !supabase) return undefined;
+
+    let cancelled = false;
+    supabase.auth.getSession().then(({ data }) => {
+      if (cancelled) return;
+      setSession(data.session);
+      setAuthReady(true);
+    });
+
+    const { data: listener } = supabase.auth.onAuthStateChange((_event, nextSession) => {
+      setSession(nextSession);
+      setAuthReady(true);
+    });
+
+    return () => {
+      cancelled = true;
+      listener.subscription.unsubscribe();
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!canUseStorage) return;
+    setLoaded(false);
+    setDayLoaded(false);
+    setHydratedDayKey(null);
     let cancelled = false;
     async function load() {
       let m = { startDate: todayKey() };
       try {
-        const r = await store.get(STORAGE_META);
+        const r = await storage.get(STORAGE_META);
         if (r?.value) m = JSON.parse(r.value);
-        else await store.set(STORAGE_META, JSON.stringify(m));
+        else await storage.set(STORAGE_META, JSON.stringify(m));
       } catch (_) {}
       if (cancelled) return;
       setMeta(m);
@@ -238,14 +325,16 @@ export default function DailyChecklist() {
     }
     load();
     return () => { cancelled = true; };
-  }, []);
+  }, [canUseStorage, storage, storageScope]);
 
   useEffect(() => {
     if (!loaded) return;
     let cancelled = false;
+    setDayLoaded(false);
+    setHydratedDayKey(null);
     async function loadDay() {
       try {
-        const r = await store.get(STORAGE_DAILY(viewingKey));
+        const r = await storage.get(STORAGE_DAILY(viewingKey));
         if (!cancelled) {
           if (r?.value) {
             const parsed = JSON.parse(r.value);
@@ -261,21 +350,27 @@ export default function DailyChecklist() {
           } else {
             setDay(DEFAULT_DAY);
           }
+          setDayLoaded(true);
+          setHydratedDayKey(viewingKey);
         }
       } catch (_) {
-        if (!cancelled) setDay(DEFAULT_DAY);
+        if (!cancelled) {
+          setDay(DEFAULT_DAY);
+          setDayLoaded(true);
+          setHydratedDayKey(viewingKey);
+        }
       }
     }
     loadDay();
     return () => { cancelled = true; };
-  }, [viewingKey, loaded]);
+  }, [viewingKey, loaded, storage]);
 
   useEffect(() => {
     if (!loaded) return;
     let cancelled = false;
     async function loadW() {
       try {
-        const r = await store.get(STORAGE_WEEK(weekNumber));
+        const r = await storage.get(STORAGE_WEEK(weekNumber));
         if (!cancelled) setWeekMs(r?.value ? JSON.parse(r.value) : {});
       } catch (_) {
         if (!cancelled) setWeekMs({});
@@ -283,21 +378,61 @@ export default function DailyChecklist() {
     }
     loadW();
     return () => { cancelled = true; };
-  }, [weekNumber, loaded]);
+  }, [weekNumber, loaded, storage]);
+
+  useEffect(() => {
+    latestState.current = { day, weekMs, viewingKey, weekNumber, dayLoaded, hydratedDayKey, storage };
+  }, [day, weekMs, viewingKey, weekNumber, dayLoaded, hydratedDayKey, storage]);
+
+  useEffect(() => {
+    if (!loaded || !dayLoaded || hydratedDayKey !== viewingKey) return;
+    const toSave = { ...day, lastSavedAt: new Date().toISOString() };
+    if (storage === localStore) {
+      try {
+        localStorage.setItem(STORAGE_DAILY(viewingKey), JSON.stringify(toSave));
+      } catch (_) {}
+      return;
+    }
+    storage.set(STORAGE_DAILY(viewingKey), JSON.stringify(toSave)).catch(() => {});
+  }, [day, viewingKey, loaded, dayLoaded, hydratedDayKey, storage]);
 
   useEffect(() => {
     if (!loaded) return;
-    const t = setTimeout(() => {
-      const toSave = { ...day, lastSavedAt: new Date().toISOString() };
-      store.set(STORAGE_DAILY(viewingKey), JSON.stringify(toSave));
-    }, 600);
-    return () => clearTimeout(t);
-  }, [day, viewingKey, loaded]);
+    storage.set(STORAGE_WEEK(weekNumber), JSON.stringify(weekMs)).catch(() => {});
+  }, [weekMs, weekNumber, loaded, storage]);
 
   useEffect(() => {
     if (!loaded) return;
-    store.set(STORAGE_WEEK(weekNumber), JSON.stringify(weekMs));
-  }, [weekMs, weekNumber, loaded]);
+
+    const flush = () => {
+      const s = latestState.current;
+      if (!s.dayLoaded || s.hydratedDayKey !== s.viewingKey) return;
+      const savedAt = new Date().toISOString();
+      if (s.storage === localStore) {
+        try {
+          localStorage.setItem(STORAGE_DAILY(s.viewingKey), JSON.stringify({ ...s.day, lastSavedAt: savedAt }));
+          localStorage.setItem(STORAGE_WEEK(s.weekNumber), JSON.stringify(s.weekMs));
+        } catch (_) {}
+        return;
+      }
+      s.storage.set(STORAGE_DAILY(s.viewingKey), JSON.stringify({ ...s.day, lastSavedAt: savedAt })).catch(() => {});
+      s.storage.set(STORAGE_WEEK(s.weekNumber), JSON.stringify(s.weekMs)).catch(() => {});
+    };
+
+    const handleVisibilityChange = () => {
+      if (document.visibilityState === 'hidden') flush();
+    };
+
+    window.addEventListener('pagehide', flush);
+    window.addEventListener('beforeunload', flush);
+    document.addEventListener('visibilitychange', handleVisibilityChange);
+
+    return () => {
+      window.removeEventListener('pagehide', flush);
+      window.removeEventListener('beforeunload', flush);
+      document.removeEventListener('visibilitychange', handleVisibilityChange);
+    };
+  }, [loaded]);
 
   const updateTop3 = (idx, val) => {
     setDay((d) => {
@@ -331,7 +466,7 @@ export default function DailyChecklist() {
   const saveAndLock = async () => {
     const updated = { ...day, locked: true, lockedAt: new Date().toISOString(), lastSavedAt: new Date().toISOString() };
     setDay(updated);
-    await store.set(STORAGE_DAILY(viewingKey), JSON.stringify(updated));
+    await storage.set(STORAGE_DAILY(viewingKey), JSON.stringify(updated));
     setSavedFlash(true);
     setTimeout(() => setSavedFlash(false), 2000);
   };
@@ -339,15 +474,15 @@ export default function DailyChecklist() {
   const unlockDay = async () => {
     const updated = { ...day, locked: false, lockedAt: null };
     setDay(updated);
-    await store.set(STORAGE_DAILY(viewingKey), JSON.stringify(updated));
+    await storage.set(STORAGE_DAILY(viewingKey), JSON.stringify(updated));
   };
 
   const resetEverything = async () => {
     const newMeta = { startDate: todayKey() };
-    await store.set(STORAGE_META, JSON.stringify(newMeta));
-    for (let i = 1; i <= 4; i++) await store.delete(STORAGE_WEEK(i));
-    const list = await store.list(STORAGE_PREFIX_DAY);
-    if (list?.keys) for (const k of list.keys) await store.delete(k);
+    await storage.set(STORAGE_META, JSON.stringify(newMeta));
+    for (let i = 1; i <= 4; i++) await storage.delete(STORAGE_WEEK(i));
+    const list = await storage.list(STORAGE_PREFIX_DAY);
+    if (list?.keys) for (const k of list.keys) await storage.delete(k);
     setMeta(newMeta);
     setDay(DEFAULT_DAY);
     setWeekMs({});
@@ -357,11 +492,11 @@ export default function DailyChecklist() {
   };
 
   const openHistory = async () => {
-    const list = await store.list(STORAGE_PREFIX_DAY);
+    const list = await storage.list(STORAGE_PREFIX_DAY);
     if (list?.keys) {
       const days = [];
       for (const k of list.keys) {
-        const r = await store.get(k);
+        const r = await storage.get(k);
         if (r?.value) {
           const dateKey = k.replace(STORAGE_PREFIX_DAY, '');
           try { days.push({ key: dateKey, ...JSON.parse(r.value) }); } catch (_) {}
@@ -385,6 +520,23 @@ export default function DailyChecklist() {
   const milestonePct = Math.round((milestonesDone / milestones.items.length) * 100);
   const allTop3Done = day.top3.every((t) => t && t.trim().length > 0);
   const countersHit = COUNTERS.filter((c) => (day.counters[c.id] || 0) >= c.target).length;
+  const signOut = () => supabase?.auth.signOut();
+
+  if (!authReady) {
+    return (
+      <div style={{ background: C.bg, color: C.textMuted, minHeight: '100vh', fontFamily: C.sans, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+        <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 16 }}>
+          <div style={{ width: 40, height: 40, borderRadius: '50%', border: '2px solid transparent', borderTopColor: C.accent, animation: 'spin 0.8s linear infinite' }} />
+          <div style={{ fontSize: 13, letterSpacing: '0.08em', fontFamily: C.mono, color: C.textDim }}>LOADING…</div>
+          <style>{`@keyframes spin { to { transform: rotate(360deg); } }`}</style>
+        </div>
+      </div>
+    );
+  }
+
+  if (isSupabaseConfigured && !session) {
+    return <AuthGate />;
+  }
 
   if (!loaded) {
     return (
@@ -413,8 +565,9 @@ export default function DailyChecklist() {
             <span style={{ color: C.textDim }}>/</span>
             <span>HISTORY</span>
           </div>
-          <div style={{ fontSize: 11, color: C.textMuted }}>
-            {historyDays.length} {historyDays.length === 1 ? 'DAY' : 'DAYS'} LOGGED
+          <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap', justifyContent: 'flex-end', fontSize: 11, color: C.textMuted }}>
+            <span>{historyDays.length} {historyDays.length === 1 ? 'DAY' : 'DAYS'} LOGGED</span>
+            <button onClick={signOut} style={pillBtn()}>SIGN OUT</button>
           </div>
         </header>
 
@@ -516,6 +669,11 @@ export default function DailyChecklist() {
           <button onClick={() => setShowResetConfirm(true)} style={pillBtn()}>
             <RotateCcw size={11} /> RESET
           </button>
+          {isSupabaseConfigured && (
+            <button onClick={signOut} style={pillBtn()}>
+              SIGN OUT
+            </button>
+          )}
         </div>
       </header>
 
@@ -948,6 +1106,95 @@ export default function DailyChecklist() {
   );
 }
 
+function AuthGate() {
+  const [mode, setMode] = useState('signin');
+  const [email, setEmail] = useState('');
+  const [password, setPassword] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [message, setMessage] = useState('');
+
+  const submit = async (e) => {
+    e.preventDefault();
+    setBusy(true);
+    setMessage('');
+
+    const authCall = mode === 'signin'
+      ? supabase.auth.signInWithPassword({ email, password })
+      : supabase.auth.signUp({ email, password });
+
+    const { error } = await authCall;
+    setBusy(false);
+
+    if (error) {
+      setMessage(error.message);
+      return;
+    }
+
+    if (mode === 'signup') {
+      setMessage('Account created. If Supabase asks for email confirmation, confirm it and then sign in.');
+    }
+  };
+
+  return (
+    <Shell>
+      <section style={{ minHeight: 'calc(100vh - 160px)', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+        <form onSubmit={submit} style={{ width: '100%', maxWidth: 420, background: C.bgElev, border: `1px solid ${C.border}`, borderRadius: C.radius, padding: 28, boxShadow: '0 24px 48px rgba(0,0,0,0.25)' }}>
+          <div style={{ fontFamily: C.mono, fontSize: 11, letterSpacing: '0.08em', color: C.accent, marginBottom: 12 }}>CLOUD SYNC</div>
+          <h1 style={{ margin: 0, marginBottom: 10, fontSize: 28, lineHeight: 1.1, letterSpacing: '-0.02em' }}>
+            {mode === 'signin' ? 'Sign in to your tracker' : 'Create your tracker account'}
+          </h1>
+          <p style={{ margin: 0, marginBottom: 24, color: C.textMuted, fontSize: 14, lineHeight: 1.6 }}>
+            Your progress is saved to Supabase so it survives incognito windows and follows you between devices.
+          </p>
+
+          <label style={authLabel()}>
+            Email
+            <input
+              type="email"
+              value={email}
+              onChange={(e) => setEmail(e.target.value)}
+              autoComplete="email"
+              required
+              style={authInput()}
+            />
+          </label>
+
+          <label style={authLabel()}>
+            Password
+            <input
+              type="password"
+              value={password}
+              onChange={(e) => setPassword(e.target.value)}
+              autoComplete={mode === 'signin' ? 'current-password' : 'new-password'}
+              minLength={6}
+              required
+              style={authInput()}
+            />
+          </label>
+
+          {message && (
+            <div style={{ color: message.toLowerCase().includes('created') ? C.ok : C.warn, fontSize: 13, lineHeight: 1.5, marginBottom: 16 }}>
+              {message}
+            </div>
+          )}
+
+          <button type="submit" disabled={busy} style={{ ...btnStyle('primary'), width: '100%', justifyContent: 'center', padding: '14px 18px', opacity: busy ? 0.7 : 1 }}>
+            <Lock size={14} /> {busy ? 'Working...' : mode === 'signin' ? 'Sign in' : 'Create account'}
+          </button>
+
+          <button
+            type="button"
+            onClick={() => { setMode(mode === 'signin' ? 'signup' : 'signin'); setMessage(''); }}
+            style={{ marginTop: 14, width: '100%', background: 'transparent', border: 'none', color: C.textMuted, cursor: 'pointer', fontSize: 13 }}
+          >
+            {mode === 'signin' ? 'Need an account? Create one' : 'Already have an account? Sign in'}
+          </button>
+        </form>
+      </section>
+    </Shell>
+  );
+}
+
 function Shell({ children }) {
   return (
     <div style={{ background: C.bg, color: C.text, minHeight: '100vh', fontFamily: C.sans }}>
@@ -1010,6 +1257,14 @@ function headerStyle() {
 
 function pillBtn() {
   return { background: C.bgElev, border: `1px solid ${C.borderStrong}`, color: C.textMuted, padding: '6px 14px', borderRadius: 999, fontSize: 11, letterSpacing: '0.04em', cursor: 'pointer', fontFamily: C.mono, display: 'inline-flex', alignItems: 'center', gap: 6, transition: 'all 0.2s ease', fontWeight: 500 };
+}
+
+function authLabel() {
+  return { display: 'flex', flexDirection: 'column', gap: 8, marginBottom: 16, color: C.textMuted, fontFamily: C.mono, fontSize: 11, letterSpacing: '0.08em', textTransform: 'uppercase' };
+}
+
+function authInput() {
+  return { width: '100%', boxSizing: 'border-box', background: C.surface, border: `1px solid ${C.borderStrong}`, borderRadius: C.radiusSm, color: C.text, padding: '14px 16px', fontFamily: C.sans, fontSize: 15, outline: 'none', textTransform: 'none', letterSpacing: 0 };
 }
 
 function iconBtn() {
