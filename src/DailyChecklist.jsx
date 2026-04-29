@@ -1,6 +1,6 @@
 import { useState, useEffect, useMemo, useRef } from 'react';
 import { Plus, Minus, Copy, Check, ChevronDown, ChevronRight, RotateCcw, Sparkles, History, Lock, Unlock, ArrowLeft, Calendar, X, MessageSquare, Trash2 } from 'lucide-react';
-import { isSupabaseConfigured, supabase, supabaseConfigError } from './supabaseClient';
+import { isSupabaseConfigured, siteUrl, supabase, supabaseConfigError } from './supabaseClient';
 
 // ============== CONSTANTS ==============
 const C = {
@@ -284,6 +284,7 @@ export default function DailyChecklist() {
   const dayNumber = dayNumberFor(viewingKey, meta.startDate);
   const weekNumber = weekNumberFor(dayNumber);
   const milestones = WEEK_MILESTONES[weekNumber];
+  const isAuthCallback = window.location.pathname === '/auth/callback';
 
   useEffect(() => {
     if (!isSupabaseConfigured || !supabase) return undefined;
@@ -305,6 +306,11 @@ export default function DailyChecklist() {
       listener.subscription.unsubscribe();
     };
   }, []);
+
+  useEffect(() => {
+    if (!isAuthCallback || !session) return;
+    window.history.replaceState({}, '', '/');
+  }, [isAuthCallback, session]);
 
   useEffect(() => {
     if (!canUseStorage) return;
@@ -524,6 +530,10 @@ export default function DailyChecklist() {
 
   if (supabaseConfigError) {
     return <ConfigError message={supabaseConfigError} />;
+  }
+
+  if (isAuthCallback) {
+    return <AuthCallbackStatus confirmed={Boolean(session)} ready={authReady} />;
   }
 
   if (!authReady) {
@@ -1113,6 +1123,7 @@ export default function DailyChecklist() {
 function AuthGate() {
   const [mode, setMode] = useState('signin');
   const [email, setEmail] = useState('');
+  const [pendingEmail, setPendingEmail] = useState('');
   const [password, setPassword] = useState('');
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState('');
@@ -1124,18 +1135,97 @@ function AuthGate() {
 
     const authCall = mode === 'signin'
       ? supabase.auth.signInWithPassword({ email, password })
-      : supabase.auth.signUp({ email, password });
+      : supabase.auth.signUp({
+          email,
+          password,
+          options: {
+            emailRedirectTo: `${siteUrl}/auth/callback`,
+          },
+        });
 
-    const { error } = await authCall;
+    const { data, error } = await authCall;
     setBusy(false);
 
     if (error) {
+      if (error.message?.toLowerCase().includes('email not confirmed')) {
+        setPendingEmail(email);
+        setMode('checkEmail');
+        setMessage('Confirm your email before signing in. You can resend the confirmation below.');
+        return;
+      }
       setMessage(error.message);
       return;
     }
 
-    if (mode === 'signup') {
-      setMessage('Account created. If Supabase asks for email confirmation, confirm it and then sign in.');
+    if (mode === 'signup' && !data?.session) {
+      setPendingEmail(email);
+      setMode('checkEmail');
+      setMessage('');
+    }
+  };
+
+  const resendConfirmation = async () => {
+    const targetEmail = pendingEmail || email;
+    if (!targetEmail) {
+      setMessage('Enter your email first, then resend confirmation.');
+      return;
+    }
+
+    setBusy(true);
+    setMessage('');
+    const { error } = await supabase.auth.resend({
+      type: 'signup',
+      email: targetEmail,
+      options: {
+        emailRedirectTo: `${siteUrl}/auth/callback`,
+      },
+    });
+    setBusy(false);
+
+    setMessage(error ? error.message : `Confirmation email sent to ${targetEmail}.`);
+  };
+
+  if (mode === 'checkEmail') {
+    const targetEmail = pendingEmail || email;
+
+    return (
+      <Shell>
+        <section style={{ minHeight: 'calc(100vh - 160px)', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+          <div style={{ width: '100%', maxWidth: 440, background: C.bgElev, border: `1px solid ${C.border}`, borderRadius: C.radius, padding: 28, boxShadow: '0 24px 48px rgba(0,0,0,0.25)' }}>
+            <div style={{ fontFamily: C.mono, fontSize: 11, letterSpacing: '0.08em', color: C.accent, marginBottom: 12 }}>CHECK YOUR EMAIL</div>
+            <h1 style={{ margin: 0, marginBottom: 10, fontSize: 28, lineHeight: 1.1, letterSpacing: '-0.02em' }}>Confirm your tracker account</h1>
+            <p style={{ margin: 0, marginBottom: 20, color: C.textMuted, fontSize: 14, lineHeight: 1.6 }}>
+              We sent a confirmation link to <span style={{ color: C.text }}>{targetEmail || 'your email'}</span>. Open it to finish sign-in, then come back here.
+            </p>
+
+            {message && (
+              <div style={{ color: message.toLowerCase().includes('sent') ? C.ok : C.warn, fontSize: 13, lineHeight: 1.5, marginBottom: 16 }}>
+                {message}
+              </div>
+            )}
+
+            <button type="button" onClick={resendConfirmation} disabled={busy} style={{ ...btnStyle('primary'), width: '100%', justifyContent: 'center', padding: '14px 18px', opacity: busy ? 0.7 : 1 }}>
+              {busy ? 'Sending...' : 'Resend confirmation'}
+            </button>
+
+            <button
+              type="button"
+              onClick={() => { setMode('signin'); setMessage(''); }}
+              style={{ marginTop: 14, width: '100%', background: 'transparent', border: 'none', color: C.textMuted, cursor: 'pointer', fontSize: 13 }}
+            >
+              Back to sign in
+            </button>
+          </div>
+        </section>
+      </Shell>
+    );
+  }
+
+  const switchMode = () => {
+    setMode(mode === 'signin' ? 'signup' : 'signin');
+    setMessage('');
+    if (mode === 'signin') {
+      setPendingEmail('');
     }
   };
 
@@ -1188,7 +1278,7 @@ function AuthGate() {
 
           <button
             type="button"
-            onClick={() => { setMode(mode === 'signin' ? 'signup' : 'signin'); setMessage(''); }}
+            onClick={switchMode}
             style={{ marginTop: 14, width: '100%', background: 'transparent', border: 'none', color: C.textMuted, cursor: 'pointer', fontSize: 13 }}
           >
             {mode === 'signin' ? 'Need an account? Create one' : 'Already have an account? Sign in'}
@@ -1211,6 +1301,28 @@ function ConfigError({ message }) {
             VITE_SUPABASE_URL=https://your-project-ref.supabase.co<br />
             VITE_SUPABASE_ANON_KEY=your-supabase-anon-key
           </div>
+        </div>
+      </section>
+    </Shell>
+  );
+}
+
+function AuthCallbackStatus({ confirmed, ready }) {
+  return (
+    <Shell>
+      <section style={{ minHeight: 'calc(100vh - 160px)', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+        <div style={{ width: '100%', maxWidth: 420, background: C.bgElev, border: `1px solid ${C.border}`, borderRadius: C.radius, padding: 28, textAlign: 'center' }}>
+          <div style={{ width: 40, height: 40, borderRadius: '50%', border: '2px solid transparent', borderTopColor: confirmed ? C.ok : C.accent, animation: confirmed ? 'none' : 'spin 0.8s linear infinite', margin: '0 auto 18px' }} />
+          <div style={{ fontFamily: C.mono, fontSize: 11, letterSpacing: '0.08em', color: confirmed ? C.ok : C.accent, marginBottom: 12 }}>
+            {confirmed ? 'CONFIRMED' : 'CONFIRMING'}
+          </div>
+          <h1 style={{ margin: 0, marginBottom: 10, fontSize: 26, lineHeight: 1.1, letterSpacing: '-0.02em' }}>
+            {confirmed ? 'You are signed in' : 'Confirming your email...'}
+          </h1>
+          <p style={{ margin: 0, color: C.textMuted, fontSize: 14, lineHeight: 1.6 }}>
+            {confirmed || !ready ? 'Taking you to your tracker.' : 'If this takes more than a moment, return to sign in and try again.'}
+          </p>
+          <style>{`@keyframes spin { to { transform: rotate(360deg); } }`}</style>
         </div>
       </section>
     </Shell>

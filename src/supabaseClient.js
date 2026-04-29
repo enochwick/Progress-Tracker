@@ -2,6 +2,7 @@ import { createClient } from '@supabase/supabase-js';
 
 const rawSupabaseUrl = import.meta.env.VITE_SUPABASE_URL?.trim();
 const supabaseAnonKey = import.meta.env.VITE_SUPABASE_ANON_KEY?.trim();
+export const siteUrl = import.meta.env.VITE_SITE_URL?.trim() || window.location.origin;
 
 const normalizeSupabaseUrl = (value) => {
   if (!value) return '';

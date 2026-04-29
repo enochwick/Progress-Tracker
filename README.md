@@ -36,8 +36,10 @@ Cloud sync makes saved history survive incognito windows, browser restarts, and 
 2. Open the Supabase SQL editor and run `supabase-schema.sql`
 3. Copy `.env.example` to `.env.local`
 4. Fill in `VITE_SUPABASE_URL` and `VITE_SUPABASE_ANON_KEY` from Supabase Project Settings → API
-5. In Supabase Auth settings, enable Email provider
-6. For Vercel, add the same two environment variables, then redeploy
+5. Add `VITE_SITE_URL` with your deployed URL, for example `https://progress-tracker-five-delta.vercel.app`
+6. In Supabase Auth settings, enable Email provider
+7. In Supabase Auth → URL Configuration, set Site URL to your deployed URL and add `{your deployed URL}/auth/callback` to Redirect URLs
+8. For Vercel, add the same three environment variables, then redeploy
 
 When Supabase env vars are present, the app shows a sign-in/create-account screen. Each account only reads and writes its own progress rows through Row Level Security.
 
