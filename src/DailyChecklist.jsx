@@ -287,10 +287,13 @@ export default function DailyChecklist() {
   const [copiedId, setCopiedId] = useState(null);
   const [showResetConfirm, setShowResetConfirm] = useState(false);
   const [savedFlash, setSavedFlash] = useState(false);
+  const [saveError, setSaveError] = useState('');
   const storage = useMemo(() => createProgressStore(session?.user?.id), [session?.user?.id]);
   const storageScope = isSupabaseConfigured ? session?.user?.id : 'local';
   const canUseStorage = !isSupabaseConfigured || Boolean(session?.user?.id);
   const latestState = useRef({ day: DEFAULT_DAY, weekMs: {}, viewingKey: todayKey(), weekNumber: 1, dayLoaded: false, hydratedDayKey: null, storage });
+  const dayDirty = useRef(false);
+  const weekDirty = useRef(false);
 
   const isToday = viewingKey === todayKey();
   const dayNumber = dayNumberFor(viewingKey, meta.startDate);
@@ -329,6 +332,9 @@ export default function DailyChecklist() {
     setLoaded(false);
     setDayLoaded(false);
     setHydratedDayKey(null);
+    setSaveError('');
+    setDay(DEFAULT_DAY);
+    setWeekMs({});
     let cancelled = false;
     async function load() {
       let m = { startDate: todayKey() };
@@ -356,6 +362,7 @@ export default function DailyChecklist() {
         if (!cancelled) {
           if (r?.value) {
             const parsed = parseStoredValue(r.value, DEFAULT_DAY);
+            dayDirty.current = false;
             setDay({
               ...DEFAULT_DAY,
               ...parsed,
@@ -366,6 +373,7 @@ export default function DailyChecklist() {
               taskTimes: parsed.taskTimes || {},
             });
           } else {
+            dayDirty.current = false;
             setDay(DEFAULT_DAY);
           }
           setDayLoaded(true);
@@ -373,6 +381,7 @@ export default function DailyChecklist() {
         }
       } catch (_) {
         if (!cancelled) {
+          dayDirty.current = false;
           setDay(DEFAULT_DAY);
           setDayLoaded(true);
           setHydratedDayKey(viewingKey);
@@ -389,9 +398,15 @@ export default function DailyChecklist() {
     async function loadW() {
       try {
         const r = await storage.get(STORAGE_WEEK(weekNumber));
-        if (!cancelled) setWeekMs(r?.value ? parseStoredValue(r.value, {}) : {});
+        if (!cancelled) {
+          weekDirty.current = false;
+          setWeekMs(r?.value ? parseStoredValue(r.value, {}) : {});
+        }
       } catch (_) {
-        if (!cancelled) setWeekMs({});
+        if (!cancelled) {
+          weekDirty.current = false;
+          setWeekMs({});
+        }
       }
     }
     loadW();
@@ -404,19 +419,33 @@ export default function DailyChecklist() {
 
   useEffect(() => {
     if (!loaded || !dayLoaded || hydratedDayKey !== viewingKey) return;
+    if (!dayDirty.current) return;
     const toSave = { ...day, lastSavedAt: new Date().toISOString() };
     if (storage === localStore) {
       try {
         localStorage.setItem(STORAGE_DAILY(viewingKey), JSON.stringify(toSave));
+        dayDirty.current = false;
+        setSaveError('');
       } catch (_) {}
       return;
     }
-    storage.set(STORAGE_DAILY(viewingKey), JSON.stringify(toSave)).catch(() => {});
+    storage.set(STORAGE_DAILY(viewingKey), JSON.stringify(toSave))
+      .then(() => {
+        dayDirty.current = false;
+        setSaveError('');
+      })
+      .catch((error) => setSaveError(error.message || 'Cloud save failed.'));
   }, [day, viewingKey, loaded, dayLoaded, hydratedDayKey, storage]);
 
   useEffect(() => {
     if (!loaded) return;
-    storage.set(STORAGE_WEEK(weekNumber), JSON.stringify(weekMs)).catch(() => {});
+    if (!weekDirty.current) return;
+    storage.set(STORAGE_WEEK(weekNumber), JSON.stringify(weekMs))
+      .then(() => {
+        weekDirty.current = false;
+        setSaveError('');
+      })
+      .catch((error) => setSaveError(error.message || 'Cloud save failed.'));
   }, [weekMs, weekNumber, loaded, storage]);
 
   useEffect(() => {
@@ -453,6 +482,7 @@ export default function DailyChecklist() {
   }, [loaded]);
 
   const updateTop3 = (idx, val) => {
+    dayDirty.current = true;
     setDay((d) => {
       const next = [...d.top3];
       next[idx] = val;
@@ -460,18 +490,48 @@ export default function DailyChecklist() {
     });
   };
 
-  const toggleCheck = (id) => setDay((d) => ({ ...d, checked: { ...d.checked, [id]: !d.checked[id] } }));
-  const adjustCounter = (id, delta) => setDay((d) => ({ ...d, counters: { ...d.counters, [id]: Math.max(0, (d.counters[id] || 0) + delta) } }));
-  const setWeekIncome = (val) => setWeekMs((m) => ({ ...m, income: parseFloat(val) || 0 }));
-  const setReview = (key, val) => setDay((d) => ({ ...d, review: { ...d.review, [key]: val } }));
-  const toggleMilestone = (id) => setWeekMs((m) => ({ ...m, [id]: !m[id] }));
+  const toggleCheck = (id) => {
+    dayDirty.current = true;
+    setDay((d) => ({ ...d, checked: { ...d.checked, [id]: !d.checked[id] } }));
+  };
+  const adjustCounter = (id, delta) => {
+    dayDirty.current = true;
+    setDay((d) => ({ ...d, counters: { ...d.counters, [id]: Math.max(0, (d.counters[id] || 0) + delta) } }));
+  };
+  const setWeekIncome = (val) => {
+    weekDirty.current = true;
+    setWeekMs((m) => ({ ...m, income: parseFloat(val) || 0 }));
+  };
+  const setReview = (key, val) => {
+    dayDirty.current = true;
+    setDay((d) => ({ ...d, review: { ...d.review, [key]: val } }));
+  };
+  const toggleMilestone = (id) => {
+    weekDirty.current = true;
+    setWeekMs((m) => ({ ...m, [id]: !m[id] }));
+  };
 
-  const addPlan = () => setDay((d) => ({ ...d, plans: [...d.plans, ''] }));
-  const updatePlan = (idx, val) => setDay((d) => { const p = [...d.plans]; p[idx] = val; return { ...d, plans: p }; });
-  const removePlan = (idx) => setDay((d) => ({ ...d, plans: d.plans.filter((_, i) => i !== idx) }));
+  const addPlan = () => {
+    dayDirty.current = true;
+    setDay((d) => ({ ...d, plans: [...d.plans, ''] }));
+  };
+  const updatePlan = (idx, val) => {
+    dayDirty.current = true;
+    setDay((d) => { const p = [...d.plans]; p[idx] = val; return { ...d, plans: p }; });
+  };
+  const removePlan = (idx) => {
+    dayDirty.current = true;
+    setDay((d) => ({ ...d, plans: d.plans.filter((_, i) => i !== idx) }));
+  };
 
-  const setNote = (taskId, val) => setDay((d) => ({ ...d, notes: { ...d.notes, [taskId]: val } }));
-  const setTaskTime = (taskId, val) => setDay((d) => ({ ...d, taskTimes: { ...d.taskTimes, [taskId]: val } }));
+  const setNote = (taskId, val) => {
+    dayDirty.current = true;
+    setDay((d) => ({ ...d, notes: { ...d.notes, [taskId]: val } }));
+  };
+  const setTaskTime = (taskId, val) => {
+    dayDirty.current = true;
+    setDay((d) => ({ ...d, taskTimes: { ...d.taskTimes, [taskId]: val } }));
+  };
 
   const copyScript = async (script) => {
     try {
@@ -484,7 +544,14 @@ export default function DailyChecklist() {
   const saveAndLock = async () => {
     const updated = { ...day, locked: true, lockedAt: new Date().toISOString(), lastSavedAt: new Date().toISOString() };
     setDay(updated);
-    await storage.set(STORAGE_DAILY(viewingKey), JSON.stringify(updated));
+    try {
+      await storage.set(STORAGE_DAILY(viewingKey), JSON.stringify(updated));
+      dayDirty.current = false;
+      setSaveError('');
+    } catch (error) {
+      setSaveError(error.message || 'Cloud save failed.');
+      return;
+    }
     setSavedFlash(true);
     setTimeout(() => setSavedFlash(false), 2000);
   };
@@ -492,7 +559,13 @@ export default function DailyChecklist() {
   const unlockDay = async () => {
     const updated = { ...day, locked: false, lockedAt: null };
     setDay(updated);
-    await storage.set(STORAGE_DAILY(viewingKey), JSON.stringify(updated));
+    try {
+      await storage.set(STORAGE_DAILY(viewingKey), JSON.stringify(updated));
+      dayDirty.current = false;
+      setSaveError('');
+    } catch (error) {
+      setSaveError(error.message || 'Cloud save failed.');
+    }
   };
 
   const resetEverything = async () => {
@@ -539,7 +612,24 @@ export default function DailyChecklist() {
   const milestonePct = Math.round((milestonesDone / milestones.items.length) * 100);
   const allTop3Done = day.top3.every((t) => t && t.trim().length > 0);
   const countersHit = COUNTERS.filter((c) => (day.counters[c.id] || 0) >= c.target).length;
-  const signOut = () => supabase?.auth.signOut();
+  const signOut = async () => {
+    if (isSupabaseConfigured && dayLoaded && hydratedDayKey === viewingKey) {
+      try {
+        await Promise.all([
+          storage.set(STORAGE_DAILY(viewingKey), JSON.stringify({ ...day, lastSavedAt: new Date().toISOString() })),
+          storage.set(STORAGE_WEEK(weekNumber), JSON.stringify(weekMs)),
+        ]);
+        dayDirty.current = false;
+        weekDirty.current = false;
+        setSaveError('');
+      } catch (error) {
+        setSaveError(error.message || 'Cloud save failed. Try again before signing out.');
+        return;
+      }
+    }
+
+    await supabase?.auth.signOut();
+  };
   const signedInEmail = session?.user?.email;
 
   if (supabaseConfigError) {
@@ -737,6 +827,12 @@ export default function DailyChecklist() {
           <button onClick={unlockDay} style={{ ...pillBtn(), color: C.ok, borderColor: 'rgba(52, 211, 153, 0.3)' }}>
             <Unlock size={11} /> UNLOCK TO EDIT
           </button>
+        </div>
+      )}
+
+      {saveError && (
+        <div style={{ background: 'rgba(251, 191, 36, 0.08)', border: `1px solid rgba(251, 191, 36, 0.22)`, color: C.warn, padding: '14px 18px', marginBottom: 28, borderRadius: C.radius, fontSize: 13, lineHeight: 1.5 }}>
+          Cloud save problem: {saveError}
         </div>
       )}
 
