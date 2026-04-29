@@ -56,6 +56,18 @@ const localStore = {
   },
 };
 
+const parseStoredValue = (value, fallback = null) => {
+  if (value == null) return fallback;
+  if (typeof value === 'string') {
+    try { return JSON.parse(value); }
+    catch (_) { return fallback; }
+  }
+  if (typeof value === 'object') return value;
+  return fallback;
+};
+
+const toStoredJson = (value) => parseStoredValue(value, value);
+
 const createProgressStore = (userId) => {
   if (!isSupabaseConfigured || !supabase || !userId) return localStore;
 
@@ -78,7 +90,7 @@ const createProgressStore = (userId) => {
           {
             user_id: userId,
             storage_key: key,
-            value,
+            value: toStoredJson(value),
             updated_at: new Date().toISOString(),
           },
           { onConflict: 'user_id,storage_key' },
@@ -322,7 +334,7 @@ export default function DailyChecklist() {
       let m = { startDate: todayKey() };
       try {
         const r = await storage.get(STORAGE_META);
-        if (r?.value) m = JSON.parse(r.value);
+        if (r?.value) m = parseStoredValue(r.value, m);
         else await storage.set(STORAGE_META, JSON.stringify(m));
       } catch (_) {}
       if (cancelled) return;
@@ -343,7 +355,7 @@ export default function DailyChecklist() {
         const r = await storage.get(STORAGE_DAILY(viewingKey));
         if (!cancelled) {
           if (r?.value) {
-            const parsed = JSON.parse(r.value);
+            const parsed = parseStoredValue(r.value, DEFAULT_DAY);
             setDay({
               ...DEFAULT_DAY,
               ...parsed,
@@ -377,7 +389,7 @@ export default function DailyChecklist() {
     async function loadW() {
       try {
         const r = await storage.get(STORAGE_WEEK(weekNumber));
-        if (!cancelled) setWeekMs(r?.value ? JSON.parse(r.value) : {});
+        if (!cancelled) setWeekMs(r?.value ? parseStoredValue(r.value, {}) : {});
       } catch (_) {
         if (!cancelled) setWeekMs({});
       }
@@ -505,7 +517,8 @@ export default function DailyChecklist() {
         const r = await storage.get(k);
         if (r?.value) {
           const dateKey = k.replace(STORAGE_PREFIX_DAY, '');
-          try { days.push({ key: dateKey, ...JSON.parse(r.value) }); } catch (_) {}
+          const parsed = parseStoredValue(r.value);
+          if (parsed) days.push({ key: dateKey, ...parsed });
         }
       }
       days.sort((a, b) => b.key.localeCompare(a.key));
@@ -527,6 +540,7 @@ export default function DailyChecklist() {
   const allTop3Done = day.top3.every((t) => t && t.trim().length > 0);
   const countersHit = COUNTERS.filter((c) => (day.counters[c.id] || 0) >= c.target).length;
   const signOut = () => supabase?.auth.signOut();
+  const signedInEmail = session?.user?.email;
 
   if (supabaseConfigError) {
     return <ConfigError message={supabaseConfigError} />;
@@ -581,6 +595,7 @@ export default function DailyChecklist() {
           </div>
           <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap', justifyContent: 'flex-end', fontSize: 11, color: C.textMuted }}>
             <span>{historyDays.length} {historyDays.length === 1 ? 'DAY' : 'DAYS'} LOGGED</span>
+            {signedInEmail && <span>{signedInEmail}</span>}
             <button onClick={signOut} style={pillBtn()}>SIGN OUT</button>
           </div>
         </header>
@@ -685,7 +700,7 @@ export default function DailyChecklist() {
           </button>
           {isSupabaseConfigured && (
             <button onClick={signOut} style={pillBtn()}>
-              SIGN OUT
+              {signedInEmail || 'SIGN OUT'}
             </button>
           )}
         </div>
